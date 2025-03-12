@@ -1,11 +1,12 @@
 use {
     backoff::{future::retry, ExponentialBackoff},
     clap::{Parser, Subcommand, ValueEnum},
+    dotenv::dotenv,
     futures::{future::TryFutureExt, sink::SinkExt, stream::StreamExt},
     log::{error, info},
     solana_sdk::{pubkey::Pubkey, signature::Signature, transaction::TransactionError},
     solana_transaction_status::{EncodedTransactionWithStatusMeta, UiTransactionEncoding},
-    std::{collections::HashMap, env, fmt, fs::File, sync::Arc, time::Duration},
+    std::{collections::HashMap, env, fmt, fs::File, str::FromStr, sync::Arc, time::Duration},
     tokio::sync::Mutex,
     yellowstone_grpc_client::{GeyserGrpcClient, GeyserGrpcClientError, Interceptor},
     yellowstone_grpc_proto::prelude::{
@@ -29,25 +30,75 @@ type EntryFilterMap = HashMap<String, SubscribeRequestFilterEntry>;
 type BlocksFilterMap = HashMap<String, SubscribeRequestFilterBlocks>;
 type BlocksMetaFilterMap = HashMap<String, SubscribeRequestFilterBlocksMeta>;
 
-#[derive(Debug, Clone, Parser)]
-#[clap(author, version, about)]
+#[derive(Debug, Clone)]
 struct Args {
-    #[clap(short, long, default_value_t = String::from("http://127.0.0.1:10000"))]
-    /// Service endpoint
     endpoint: String,
-
-    #[clap(long)]
     x_token: Option<String>,
-
-    /// Commitment level: processed, confirmed or finalized
-    #[clap(long)]
     commitment: Option<ArgsCommitment>,
-
-    #[command(subcommand)]
     action: Action,
 }
 
 impl Args {
+    fn new_from_env() -> anyhow::Result<Self> {
+        // Load environment variables from .env file
+        dotenv().ok();
+        
+        // Required environment variables
+        let endpoint = env::var("ENDPOINT")
+            .map_err(|_| anyhow::anyhow!("ENDPOINT environment variable not set"))?;
+        
+        // Optional environment variables
+        let x_token = env::var("X_TOKEN").ok();
+        
+        // Parse commitment
+        let commitment = env::var("COMMITMENT").ok().map(|c| {
+            match c.as_str() {
+                "Processed" => ArgsCommitment::Processed,
+                "Confirmed" => ArgsCommitment::Confirmed,
+                "Finalized" => ArgsCommitment::Finalized,
+                _ => ArgsCommitment::Processed, // Default to Processed if invalid
+            }
+        });
+        
+        // Parse action
+        let action_str = env::var("ACTION")
+            .map_err(|_| anyhow::anyhow!("ACTION environment variable not set"))?;
+        
+        let action = match action_str.as_str() {
+            "HealthCheck" => Action::HealthCheck,
+            "HealthWatch" => Action::HealthWatch,
+            "Ping" => {
+                let count = env::var("PING_COUNT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                Action::Ping { count }
+            },
+            "GetLatestBlockhash" => Action::GetLatestBlockhash,
+            "GetBlockHeight" => Action::GetBlockHeight,
+            "GetSlot" => Action::GetSlot,
+            "IsBlockhashValid" => {
+                let blockhash = env::var("BLOCKHASH")
+                    .map_err(|_| anyhow::anyhow!("BLOCKHASH environment variable required for IsBlockhashValid action"))?;
+                Action::IsBlockhashValid { blockhash }
+            },
+            "GetVersion" => Action::GetVersion,
+            "Subscribe" => {
+                // Create a new ActionSubscribe and populate from env vars
+                let subscribe_args = Box::new(self::parse_subscribe_args_from_env()?);
+                Action::Subscribe(subscribe_args)
+            },
+            _ => return Err(anyhow::anyhow!("Invalid ACTION value")),
+        };
+        
+        Ok(Args {
+            endpoint,
+            x_token,
+            commitment,
+            action,
+        })
+    }
+
     fn get_commitment(&self) -> Option<CommitmentLevel> {
         Some(self.commitment.unwrap_or_default().into())
     }
@@ -63,7 +114,61 @@ impl Args {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+fn parse_subscribe_args_from_env() -> anyhow::Result<ActionSubscribe> {
+    // Helper function to parse boolean env vars
+    let parse_bool = |key: &str| -> bool {
+        env::var(key)
+            .ok()
+            .and_then(|val| val.parse::<bool>().ok())
+            .unwrap_or(false)
+    };
+    
+    // Helper function to parse comma-separated strings 
+    let parse_string_list = |key: &str| -> Vec<String> {
+        env::var(key)
+            .ok()
+            .map(|val| val.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_else(Vec::new)
+    };
+    
+    Ok(ActionSubscribe {
+        accounts: parse_bool("SUBSCRIBE_ACCOUNTS"),
+        accounts_account: parse_string_list("ACCOUNTS_ACCOUNT"),
+        accounts_account_path: env::var("ACCOUNTS_ACCOUNT_PATH").ok(),
+        accounts_owner: parse_string_list("ACCOUNTS_OWNER"),
+        accounts_memcmp: parse_string_list("ACCOUNTS_MEMCMP"),
+        accounts_datasize: env::var("ACCOUNTS_DATASIZE").ok().and_then(|s| s.parse().ok()),
+        accounts_token_account_state: parse_bool("ACCOUNTS_TOKEN_ACCOUNT_STATE"),
+        accounts_data_slice: parse_string_list("ACCOUNTS_DATA_SLICE"),
+        slots: parse_bool("SUBSCRIBE_SLOTS"),
+        slots_filter_by_commitment: parse_bool("SLOTS_FILTER_BY_COMMITMENT"),
+        transactions: parse_bool("SUBSCRIBE_TRANSACTIONS"),
+        transactions_vote: env::var("TRANSACTIONS_VOTE").ok().and_then(|s| s.parse().ok()),
+        transactions_failed: env::var("TRANSACTIONS_FAILED").ok().and_then(|s| s.parse().ok()),
+        transactions_signature: env::var("TRANSACTIONS_SIGNATURE").ok(),
+        transactions_account_include: parse_string_list("TRANSACTIONS_ACCOUNT_INCLUDE"),
+        transactions_account_exclude: parse_string_list("TRANSACTIONS_ACCOUNT_EXCLUDE"),
+        transactions_account_required: parse_string_list("TRANSACTIONS_ACCOUNT_REQUIRED"),
+        transactions_status: parse_bool("SUBSCRIBE_TRANSACTIONS_STATUS"),
+        transactions_status_vote: env::var("TRANSACTIONS_STATUS_VOTE").ok().and_then(|s| s.parse().ok()),
+        transactions_status_failed: env::var("TRANSACTIONS_STATUS_FAILED").ok().and_then(|s| s.parse().ok()),
+        transactions_status_signature: env::var("TRANSACTIONS_STATUS_SIGNATURE").ok(),
+        transactions_status_account_include: parse_string_list("TRANSACTIONS_STATUS_ACCOUNT_INCLUDE"),
+        transactions_status_account_exclude: parse_string_list("TRANSACTIONS_STATUS_ACCOUNT_EXCLUDE"),
+        transactions_status_account_required: parse_string_list("TRANSACTIONS_STATUS_ACCOUNT_REQUIRED"),
+        entry: parse_bool("SUBSCRIBE_ENTRY"),
+        blocks: parse_bool("SUBSCRIBE_BLOCKS"),
+        blocks_account_include: parse_string_list("BLOCKS_ACCOUNT_INCLUDE"),
+        blocks_include_transactions: env::var("BLOCKS_INCLUDE_TRANSACTIONS").ok().and_then(|s| s.parse().ok()),
+        blocks_include_accounts: env::var("BLOCKS_INCLUDE_ACCOUNTS").ok().and_then(|s| s.parse().ok()),
+        blocks_include_entries: env::var("BLOCKS_INCLUDE_ENTRIES").ok().and_then(|s| s.parse().ok()),
+        blocks_meta: parse_bool("SUBSCRIBE_BLOCKS_META"),
+        ping: env::var("PING_COUNT").ok().and_then(|s| s.parse().ok()),
+        resub: env::var("RESUB").ok().and_then(|s| s.parse().ok()),
+    })
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 enum ArgsCommitment {
     #[default]
     Processed,
@@ -81,156 +186,121 @@ impl From<ArgsCommitment> for CommitmentLevel {
     }
 }
 
-#[derive(Debug, Clone, Subcommand)]
+#[derive(Debug, Clone)]
 enum Action {
     HealthCheck,
     HealthWatch,
     Subscribe(Box<ActionSubscribe>),
     Ping {
-        #[clap(long, short, default_value_t = 0)]
         count: i32,
     },
     GetLatestBlockhash,
     GetBlockHeight,
     GetSlot,
     IsBlockhashValid {
-        #[clap(long, short)]
         blockhash: String,
     },
     GetVersion,
 }
 
-#[derive(Debug, Clone, clap::Args)]
+#[derive(Debug, Clone)]
 struct ActionSubscribe {
     /// Subscribe on accounts updates
-    #[clap(long)]
     accounts: bool,
 
     /// Filter by Account Pubkey
-    #[clap(long)]
     accounts_account: Vec<String>,
 
     /// Path to a JSON array of account addresses
-    #[clap(long)]
     accounts_account_path: Option<String>,
 
     /// Filter by Owner Pubkey
-    #[clap(long)]
     accounts_owner: Vec<String>,
 
     /// Filter by Offset and Data, format: `offset,data in base58`
-    #[clap(long)]
     accounts_memcmp: Vec<String>,
 
     /// Filter by Data size
-    #[clap(long)]
     accounts_datasize: Option<u64>,
 
     /// Filter valid token accounts
-    #[clap(long)]
     accounts_token_account_state: bool,
 
     /// Receive only part of updated data account, format: `offset,size`
-    #[clap(long)]
     accounts_data_slice: Vec<String>,
 
     /// Subscribe on slots updates
-    #[clap(long)]
     slots: bool,
 
     /// Filter slots by commitment
-    #[clap(long)]
     slots_filter_by_commitment: bool,
 
     /// Subscribe on transactions updates
-    #[clap(long)]
     transactions: bool,
 
     /// Filter vote transactions
-    #[clap(long)]
     transactions_vote: Option<bool>,
 
     /// Filter failed transactions
-    #[clap(long)]
     transactions_failed: Option<bool>,
 
     /// Filter by transaction signature
-    #[clap(long)]
     transactions_signature: Option<String>,
 
     /// Filter included account in transactions
-    #[clap(long)]
     transactions_account_include: Vec<String>,
 
     /// Filter excluded account in transactions
-    #[clap(long)]
     transactions_account_exclude: Vec<String>,
 
     /// Filter required account in transactions
-    #[clap(long)]
     transactions_account_required: Vec<String>,
 
     /// Subscribe on transactions_status updates
-    #[clap(long)]
     transactions_status: bool,
 
     /// Filter vote transactions for transactions_status
-    #[clap(long)]
     transactions_status_vote: Option<bool>,
 
     /// Filter failed transactions for transactions_status
-    #[clap(long)]
     transactions_status_failed: Option<bool>,
 
     /// Filter by transaction signature for transactions_status
-    #[clap(long)]
     transactions_status_signature: Option<String>,
 
     /// Filter included account in transactions for transactions_status
-    #[clap(long)]
     transactions_status_account_include: Vec<String>,
 
     /// Filter excluded account in transactions for transactions_status
-    #[clap(long)]
     transactions_status_account_exclude: Vec<String>,
 
     /// Filter required account in transactions for transactions_status
-    #[clap(long)]
     transactions_status_account_required: Vec<String>,
 
-    #[clap(long)]
     entry: bool,
 
     /// Subscribe on block updates
-    #[clap(long)]
     blocks: bool,
 
     /// Filter included account in transactions
-    #[clap(long)]
     blocks_account_include: Vec<String>,
 
     /// Include transactions to block message
-    #[clap(long)]
     blocks_include_transactions: Option<bool>,
 
     /// Include accounts to block message
-    #[clap(long)]
     blocks_include_accounts: Option<bool>,
 
     /// Include entries to block message
-    #[clap(long)]
     blocks_include_entries: Option<bool>,
 
     /// Subscribe on block meta updates (without transactions)
-    #[clap(long)]
     blocks_meta: bool,
 
     /// Send ping in subscribe request
-    #[clap(long)]
     ping: Option<i32>,
 
     // Resubscribe (only to slots) after
-    #[clap(long)]
     resub: Option<usize>,
 }
 
@@ -505,7 +575,7 @@ async fn main() -> anyhow::Result<()> {
     );
     env_logger::init();
 
-    let args = Args::parse();
+    let args = Args::new_from_env()?;
     let zero_attempts = Arc::new(Mutex::new(true));
 
     // The default exponential backoff strategy intervals:

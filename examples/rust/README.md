@@ -109,3 +109,46 @@ cargo run --bin client -- -e "https://api.rpcpool.com" \
 ```text
 response: GetVersionResponse { version: "{\"version\":\"0.7.0+solana.1.15.2\",\"proto\":\"1.2.0+solana.1.15.2\",\"solana\":\"1.15.2\",\"git\":\"e03a47c-modified\",\"rustc\":\"1.68.0-nightly\",\"buildts\":\"2023-05-27T08:20:15.440278Z\"}" }
 ```
+
+## Environment Configuration
+
+The client now supports configuration through a `.env` file. Instead of specifying command-line arguments, you can set up a `.env` file in the project directory with the following variables:
+
+```env
+# Required configuration
+ENDPOINT=https://api.example.com
+ACTION=HealthCheck
+
+# Optional configuration
+X_TOKEN=your_token_here
+COMMITMENT=Processed  # Processed, Confirmed, or Finalized
+
+# Action-specific configuration
+# For Ping action
+PING_COUNT=0
+
+# For IsBlockhashValid action
+BLOCKHASH=your_blockhash_here
+
+# For Subscribe action (set to true to enable)
+SUBSCRIBE_ACCOUNTS=false
+SUBSCRIBE_SLOTS=false
+SUBSCRIBE_TRANSACTIONS=false
+SUBSCRIBE_TRANSACTIONS_STATUS=false
+SUBSCRIBE_ENTRY=false
+SUBSCRIBE_BLOCKS=false
+SUBSCRIBE_BLOCKS_META=false
+
+# More specific filters for Subscribe action
+# Account filters
+ACCOUNTS_ACCOUNT=pubkey1,pubkey2
+ACCOUNTS_OWNER=owner1,owner2
+ACCOUNTS_MEMCMP=offset1,data1
+ACCOUNTS_DATASIZE=1234
+ACCOUNTS_TOKEN_ACCOUNT_STATE=false
+ACCOUNTS_DATA_SLICE=offset1,size1
+
+# Additional configuration options...
+```
+
+See the sample `.env` file for the complete list of configuration options.
