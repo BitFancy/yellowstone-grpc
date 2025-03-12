@@ -8,3 +8,5 @@ dump.rdb
 .vscode
 venv
 __pycache__/
+.env
+.env.*
