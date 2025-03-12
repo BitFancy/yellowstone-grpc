@@ -1,17 +1,19 @@
-# Yellowstone gRPC Configuration
+# Required configuration
 ENDPOINT=https://api.example.com
-X_TOKEN=your_token_here
-COMMITMENT=Processed
-# For ACTION, use one of: HealthCheck, HealthWatch, Subscribe, Ping, 
-# GetLatestBlockhash, GetBlockHeight, GetSlot, IsBlockhashValid, GetVersion
 ACTION=HealthCheck
-# If ACTION is Ping, set this
-PING_COUNT=0
-# If ACTION is IsBlockhashValid, set this
-BLOCKHASH=
 
-# Subscribe options (set these if ACTION is Subscribe)
-# Set to true to enable, or false to disable
+# Optional configuration
+X_TOKEN=your_token_here
+COMMITMENT=Processed  # Processed, Confirmed, or Finalized
+
+# Action-specific configuration
+# For Ping action
+PING_COUNT=0
+
+# For IsBlockhashValid action
+BLOCKHASH=your_blockhash_here
+
+# For Subscribe action (set to true to enable)
 SUBSCRIBE_ACCOUNTS=false
 SUBSCRIBE_SLOTS=false
 SUBSCRIBE_TRANSACTIONS=false
@@ -20,4 +22,13 @@ SUBSCRIBE_ENTRY=false
 SUBSCRIBE_BLOCKS=false
 SUBSCRIBE_BLOCKS_META=false
 
-# More specific subscribe filters can be added as needed 
+# More specific filters for Subscribe action
+# Account filters
+ACCOUNTS_ACCOUNT=pubkey1,pubkey2
+ACCOUNTS_OWNER=owner1,owner2
+ACCOUNTS_MEMCMP=offset1,data1
+ACCOUNTS_DATASIZE=1234
+ACCOUNTS_TOKEN_ACCOUNT_STATE=false
+ACCOUNTS_DATA_SLICE=offset1,size1
+
+# Additional configuration options...
