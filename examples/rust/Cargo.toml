@@ -10,7 +10,7 @@ keywords = { workspace = true }
 publish = false
 
 [[bin]]
-name = "bin/client"
+name = "client"
 
 [dependencies]
 anyhow = { workspace = true }
